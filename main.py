@@ -2,6 +2,9 @@ import os
 import json
 import logging
 from datetime import datetime, timedelta
+import pytz
+
+ATHENS_TZ = pytz.timezone("Europe/Athens")
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
@@ -50,7 +53,7 @@ def insert_blank_row_if_new_day(sheet, date):
         sheet.append_row(["", "", "", ""])
 
 def resolve_date(date_intent: str) -> str:
-    today = datetime.now()
+    today = datetime.now(ATHENS_TZ)
     intent = date_intent.lower().strip()
     if intent in ["today", "σήμερα", ""]:
         return today.strftime("%Y-%m-%d")
@@ -84,7 +87,7 @@ def append_meals(meals, date):
 
 def extract_meals(message: str) -> dict:
     prompt = f"""You are a food log assistant. Extract all meals and the intended date from this message.
-Today is {datetime.now().strftime("%Y-%m-%d")} ({datetime.now().strftime("%A")}).
+Today is {datetime.now(ATHENS_TZ).strftime("%Y-%m-%d")} ({datetime.now(ATHENS_TZ).strftime("%A")}).
 
 The message may contain one or multiple meals. Meal names in Greek include:
 πρωινό, δεκατιανό, μεσημεριανό, απογευματινό, βραδινό, βράδυ, σνακ, and variations without accents.
@@ -142,7 +145,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         append_meals(meals, date)
 
-        date_label = "σήμερα" if date == datetime.now().strftime("%Y-%m-%d") else date
+        date_label = "σήμερα" if date == datetime.now(ATHENS_TZ).strftime("%Y-%m-%d") else date
         reply = f"✅ Καταγράφηκε για {date_label}!\n\n"
         for meal in meals:
             reply += f"🍽 *{meal['meal']}*\n"
