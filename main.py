@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
@@ -44,41 +44,69 @@ def get_last_date(sheet):
             return row[0]
     return None
 
-def insert_blank_row_if_new_day(sheet, today):
+def insert_blank_row_if_new_day(sheet, date):
     last_date = get_last_date(sheet)
-    if last_date and last_date != today:
+    if last_date and last_date != date:
         sheet.append_row(["", "", "", ""])
 
-def append_meals(meals):
+def resolve_date(date_intent: str) -> str:
+    today = datetime.now()
+    intent = date_intent.lower().strip()
+    if intent in ["today", "σήμερα", ""]:
+        return today.strftime("%Y-%m-%d")
+    elif intent in ["yesterday", "χθες", "χθεσινή", "χθεσινος"]:
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        # Try to find day of week
+        days_el = ["δευτέρα", "τρίτη", "τετάρτη", "πέμπτη", "παρασκευή", "σάββατο", "κυριακή"]
+        days_en = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        for i, day in enumerate(days_el + days_en):
+            if day in intent:
+                target_weekday = i % 7
+                current_weekday = today.weekday()
+                days_back = (current_weekday - target_weekday) % 7
+                if days_back == 0:
+                    days_back = 7
+                return (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        return today.strftime("%Y-%m-%d")
+
+def append_meals(meals, date):
     sheet = get_sheet()
     ensure_headers(sheet)
-    today = datetime.now().strftime("%Y-%m-%d")
-    insert_blank_row_if_new_day(sheet, today)
+    insert_blank_row_if_new_day(sheet, date)
     for meal in meals:
         sheet.append_row([
-            today,
+            date,
             meal.get("meal", ""),
             meal.get("foods", ""),
             meal.get("portions", "")
         ])
 
-def extract_meals(message: str) -> list:
-    prompt = f"""You are a food log assistant. Extract all meals from this message.
+def extract_meals(message: str) -> dict:
+    prompt = f"""You are a food log assistant. Extract all meals and the intended date from this message.
+Today is {datetime.now().strftime("%Y-%m-%d")} ({datetime.now().strftime("%A")}).
+
 The message may contain one or multiple meals. Meal names in Greek include:
 πρωινό, δεκατιανό, μεσημεριανό, απογευματινό, βραδινό, βράδυ, σνακ, and variations without accents.
 
-Return ONLY a JSON array where each item has:
-  "meal": string (the meal name, capitalize first letter, e.g. "Πρωινό")
-  "foods": string (comma-separated list of food items)
-  "portions": string (comma-separated portions matching each food item, use "-" if unknown)
+Also check if the message mentions registering for a different date (e.g. "χθες", "yesterday", "Παρασκευή", "Friday").
+
+Return ONLY a JSON object with:
+  "date_intent": string (e.g. "today", "yesterday", "Παρασκευή", "Friday" — use "today" if not mentioned)
+  "meals": array where each item has:
+    "meal": string (the meal name, capitalize first letter, e.g. "Πρωινό")
+    "foods": string (comma-separated list of food items)
+    "portions": string (comma-separated portions matching each food item, use "-" if unknown)
 
 Example output:
-[
-  {{"meal": "Πρωινό", "foods": "ψωμί, γαλοπούλα, τυρί κρέμα", "portions": "1 φέτα, 2 φέτες, 2 κσ"}},
-  {{"meal": "Δεκατιανό", "foods": "μπανάνα, κάσιους", "portions": "1, 1 χούφτα"}}
-]
+{{
+  "date_intent": "yesterday",
+  "meals": [
+    {{"meal": "Βραδινό", "foods": "κοτόπουλο, σαλάτα", "portions": "200γρ, -"}}
+  ]
+}}
 
-If you cannot find any meal, return: []
+If you cannot find any meal, return: {{"date_intent": "today", "meals": []}}
 
 Message: {message}"""
 
@@ -99,7 +127,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Επεξεργασία...")
 
     try:
-        meals = extract_meals(text)
+        result = extract_meals(text)
+        meals = result.get("meals", [])
+        date_intent = result.get("date_intent", "today")
+        date = resolve_date(date_intent)
 
         if not meals:
             await update.message.reply_text(
@@ -109,9 +140,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        append_meals(meals)
+        append_meals(meals, date)
 
-        reply = "✅ Καταγράφηκε!\n\n"
+        date_label = "σήμερα" if date == datetime.now().strftime("%Y-%m-%d") else date
+        reply = f"✅ Καταγράφηκε για {date_label}!\n\n"
         for meal in meals:
             reply += f"🍽 *{meal['meal']}*\n"
             foods = meal['foods'].split(',')
