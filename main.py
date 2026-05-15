@@ -3,8 +3,6 @@ import json
 import logging
 from datetime import datetime, timedelta
 import pytz
-
-ATHENS_TZ = pytz.timezone("Europe/Athens")
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
@@ -13,6 +11,8 @@ from google.oauth2.service_account import Credentials
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+ATHENS_TZ = pytz.timezone("Europe/Athens")
 
 print("Starting Food Log bot...", flush=True)
 
@@ -38,19 +38,20 @@ def get_sheet():
 def ensure_headers(sheet):
     headers = sheet.row_values(1)
     if not headers or headers[0] != "Date":
-        sheet.insert_row(["Date", "Meal", "Foods", "Portions"], 1)
+        sheet.insert_row(["Date", "Meal", "Foods", "Portions", "Raw Message"], 1)
 
 def get_last_date(sheet):
     all_values = sheet.get_all_values()
     for row in reversed(all_values):
-        if row and row[0] and row[0] != "Date":
+        # Skip blank rows and header
+        if row and any(cell.strip() for cell in row) and row[0] != "Date":
             return row[0]
     return None
 
 def insert_blank_row_if_new_day(sheet, date):
     last_date = get_last_date(sheet)
     if last_date and last_date != date:
-        sheet.append_row(["", "", "", ""])
+        sheet.append_row(["", "", "", "", ""])
 
 def resolve_date(date_intent: str) -> str:
     today = datetime.now(ATHENS_TZ)
@@ -60,7 +61,6 @@ def resolve_date(date_intent: str) -> str:
     elif intent in ["yesterday", "χθες", "χθεσινή", "χθεσινος"]:
         return (today - timedelta(days=1)).strftime("%Y-%m-%d")
     else:
-        # Try to find day of week
         days_el = ["δευτέρα", "τρίτη", "τετάρτη", "πέμπτη", "παρασκευή", "σάββατο", "κυριακή"]
         days_en = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
         for i, day in enumerate(days_el + days_en):
@@ -73,21 +73,25 @@ def resolve_date(date_intent: str) -> str:
                 return (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
         return today.strftime("%Y-%m-%d")
 
-def append_meals(meals, date):
+def append_meals(meals, date, raw_message):
     sheet = get_sheet()
     ensure_headers(sheet)
     insert_blank_row_if_new_day(sheet, date)
-    for meal in meals:
+    for i, meal in enumerate(meals):
+        # Only log raw message on the first row of the batch
+        raw = raw_message if i == 0 else ""
         sheet.append_row([
             date,
             meal.get("meal", ""),
             meal.get("foods", ""),
-            meal.get("portions", "")
+            meal.get("portions", ""),
+            raw
         ])
 
 def extract_meals(message: str) -> dict:
+    today = datetime.now(ATHENS_TZ)
     prompt = f"""You are a food log assistant. Extract all meals and the intended date from this message.
-Today is {datetime.now(ATHENS_TZ).strftime("%Y-%m-%d")} ({datetime.now(ATHENS_TZ).strftime("%A")}).
+Today is {today.strftime("%Y-%m-%d")} ({today.strftime("%A")}).
 
 The message may contain one or multiple meals. Meal names in Greek include:
 πρωινό, δεκατιανό, μεσημεριανό, απογευματινό, βραδινό, βράδυ, σνακ, and variations without accents.
@@ -143,9 +147,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        append_meals(meals, date)
+        append_meals(meals, date, text)
 
-        date_label = "σήμερα" if date == datetime.now(ATHENS_TZ).strftime("%Y-%m-%d") else date
+        today_str = datetime.now(ATHENS_TZ).strftime("%Y-%m-%d")
+        date_label = "σήμερα" if date == today_str else date
         reply = f"✅ Καταγράφηκε για {date_label}!\n\n"
         for meal in meals:
             reply += f"🍽 *{meal['meal']}*\n"
